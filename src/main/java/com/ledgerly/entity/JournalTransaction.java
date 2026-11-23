@@ -79,14 +79,45 @@ public class JournalTransaction {
 	protected JournalTransaction() {
 	}
 
-	/** A transaction that takes effect immediately (deposits, withdrawals, small transfers). */
+	/** A transaction that takes effect immediately. */
 	public static JournalTransaction posted(String reference, TransactionType type, BigDecimal amount,
+			Account fromAccount, Account toAccount, String description, AppUser createdBy,
+			String idempotencyKey, String requestFingerprint, Instant now) {
+		JournalTransaction transaction = create(reference, type, amount, fromAccount, toAccount, description,
+				createdBy, idempotencyKey, requestFingerprint, now);
+		transaction.status = TransactionStatus.POSTED;
+		transaction.postedAt = now;
+		return transaction;
+	}
+
+	/** A large request that waits for a manager. It has no ledger entries until it's approved. */
+	public static JournalTransaction pending(String reference, TransactionType type, BigDecimal amount,
+			Account fromAccount, Account toAccount, String description, AppUser createdBy,
+			String idempotencyKey, String requestFingerprint, Instant now) {
+		JournalTransaction transaction = create(reference, type, amount, fromAccount, toAccount, description,
+				createdBy, idempotencyKey, requestFingerprint, now);
+		transaction.status = TransactionStatus.PENDING_APPROVAL;
+		return transaction;
+	}
+
+	/**
+	 * Undoes a posted transaction. The money goes back the way it came, so "from" and "to" swap.
+	 * The reason goes in the description, where statements will show it.
+	 */
+	public static JournalTransaction reversalOf(JournalTransaction original, String reference, String reason,
+			AppUser manager, String idempotencyKey, String requestFingerprint, Instant now) {
+		JournalTransaction reversal = posted(reference, TransactionType.REVERSAL, original.amount,
+				original.toAccount, original.fromAccount, reason, manager, idempotencyKey, requestFingerprint, now);
+		reversal.reverses = original;
+		return reversal;
+	}
+
+	private static JournalTransaction create(String reference, TransactionType type, BigDecimal amount,
 			Account fromAccount, Account toAccount, String description, AppUser createdBy,
 			String idempotencyKey, String requestFingerprint, Instant now) {
 		JournalTransaction transaction = new JournalTransaction();
 		transaction.reference = reference;
 		transaction.type = type;
-		transaction.status = TransactionStatus.POSTED;
 		transaction.amount = amount;
 		transaction.fromAccount = fromAccount;
 		transaction.toAccount = toAccount;
@@ -95,8 +126,33 @@ public class JournalTransaction {
 		transaction.idempotencyKey = idempotencyKey;
 		transaction.requestFingerprint = requestFingerprint;
 		transaction.createdAt = now;
-		transaction.postedAt = now;
 		return transaction;
+	}
+
+	public boolean isPending() {
+		return status == TransactionStatus.PENDING_APPROVAL;
+	}
+
+	/** ApprovalService checks the four-eyes rule first; the database checks it again. */
+	public void approve(AppUser manager, Instant now) {
+		requirePending();
+		this.status = TransactionStatus.POSTED;
+		this.approvedBy = manager;
+		this.postedAt = now;
+	}
+
+	/** approved_by records whoever decided, approve or reject. */
+	public void reject(AppUser manager, String reason) {
+		requirePending();
+		this.status = TransactionStatus.REJECTED;
+		this.approvedBy = manager;
+		this.decisionReason = reason;
+	}
+
+	private void requirePending() {
+		if (!isPending()) {
+			throw new IllegalStateException("Transaction " + reference + " is " + status + ", not pending.");
+		}
 	}
 
 	public Long getId() {

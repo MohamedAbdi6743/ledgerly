@@ -26,6 +26,7 @@ import com.ledgerly.entity.AppUser;
 import com.ledgerly.entity.JournalTransaction;
 import com.ledgerly.entity.LedgerEntry;
 import com.ledgerly.entity.Role;
+import com.ledgerly.entity.TransactionType;
 import com.ledgerly.exception.BusinessRuleException;
 import com.ledgerly.repository.AccountRepository;
 import com.ledgerly.repository.LedgerEntryRepository;
@@ -118,6 +119,20 @@ class LedgerServiceTest {
 				.isInstanceOf(BusinessRuleException.class)
 				.hasMessageContaining("frozen");
 		assertNothingChanged();
+	}
+
+	@Test
+	void aReversalMayCorrectAFrozenAccount() {
+		chequing.applyEntry(money("50.00"));
+		cash.applyEntry(money("-50.00"));
+		chequing.changeStatus(AccountStatus.FROZEN);
+		JournalTransaction reversal = JournalTransaction.posted("TX-TEST0002", TransactionType.REVERSAL,
+				money("50.00"), chequing, null, "Counterfeit notes", null, "key-87654321", "fingerprint", NOW);
+		when(ledgerEntryRepository.saveAll(anyList())).thenAnswer(call -> call.getArgument(0));
+
+		ledgerService.post(reversal, List.of(new Leg(chequing, money("-50.00")), new Leg(cash, money("50.00"))));
+
+		assertThat(chequing.getBalance()).isEqualByComparingTo("0.00");
 	}
 
 	private void assertNothingChanged() {

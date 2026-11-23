@@ -3,14 +3,15 @@
 [![CI](https://github.com/MohamedAbdi6743/ledgerly/actions/workflows/ci.yml/badge.svg)](https://github.com/MohamedAbdi6743/ledgerly/actions/workflows/ci.yml)
 
 A small core-banking system for a Canadian community credit union. Tellers open accounts and
-handle cash, members move money between their accounts, and managers approve large transfers,
+handle cash, members send money to their own and other members' accounts, and managers
+approve large transfers,
 reverse mistakes and check that the books balance.
 
 Built with Java, Spring Boot and PostgreSQL. The web pages (plain TypeScript) come later.
 
-**Status:** work in progress. The schema, login, accounts, and cash deposits and withdrawals
-are built (milestones 1–3 of 10). Transfers come next. Each section below says what's built
-and what's planned.
+**Status:** work in progress. Login, accounts, cash, transfers, approvals, reversals and the
+audit log are built (milestones 1–5 of 10). Statements and reports come next. Each section
+below says what's built and what's planned.
 
 ## Why I built it
 
@@ -25,7 +26,8 @@ Ledgerly is built around them:
 - Each transaction is double-entry: its entries always add up to zero.
 - Nothing is edited or deleted. Mistakes are fixed with a reversal.
 - A request that gets retried can never move money twice.
-- Transfers of $5,000 or more need a second person to approve them.
+- Withdrawals of $5,000 or more, and transfers of $5,000 or more to someone else, need a
+  second person to approve them.
 
 ## Features
 
@@ -44,6 +46,18 @@ Ledgerly is built around them:
 - Row locks, so two withdrawals at the same moment can't both spend the same money
 - Members see only their own accounts and transactions. Anyone else's look "not found"
 - Managers can freeze and unfreeze an account, with a reason that goes in the audit log
+- Transfers: a member sends from their own account to any member account. Tellers can move
+  money between any two member accounts
+- A daily limit of $3,000 on what a member sends to other people, counted in Toronto calendar
+  days. Moving money between your own accounts doesn't count
+- Deadlock-free locking: the sending member first, then both accounts lowest id first
+- Maker-checker: cash withdrawals of $5,000+ and transfers of $5,000+ to someone else wait as
+  "pending" (HTTP 202) and move no money until a manager approves. Whoever made the request
+  can't approve or reject it
+- Approval checks the balance again, since it may have changed while the request waited
+- Reversals: a manager undoes a posted transaction with a reason. The original stays, an
+  opposite transaction is added, and each points to the other. Works on frozen accounts too
+- `GET /api/audit` for managers: who approved, rejected, reversed, froze or opened what
 - An audit log of staff actions, password changes, and account openings and freezes
 - The full ledger schema, with the money rules enforced by PostgreSQL itself
 
@@ -51,8 +65,6 @@ Ledgerly is built around them:
 
 | Milestone | What |
 |---|---|
-| 4 | Transfers between accounts, a daily limit, deadlock tests |
-| 5 | Maker-checker approvals for $5,000+, reversals |
 | 6 | Monthly statements, a reconciliation report, a report of cash deposits of $10,000+ |
 | 7–8 | Web pages for members and staff |
 | 9 | A live demo |
@@ -154,6 +166,17 @@ once with one idempotency key. With the lock it posts once and the other 19 get 
 back. Without it, the copies race each other and crash on the database's unique key. That
 still stops the double payment, but the caller gets an error instead of the original result.
 
+**Proof the lock order matters.** Another test has Sam and Priya send each other $10, 20 times,
+all at once. Every transfer finishes. With the accounts locked in request order instead of id
+order, PostgreSQL reported `deadlock detected` and killed one of them. A third test fires ten
+$1,000 transfers from one member at once, from two accounts to two different accounts, so they
+share no account lock. Exactly three go through ($3,000). Without the lock on the member, four
+went through.
+
+**Proof the approval lock matters.** Ten threads approve the same $6,000 request at once.
+Exactly one succeeds and the account loses $6,000. With the request read without locking its
+row, three approvals went through and $18,000 left the account.
+
 **A bug the schema tests caught.** The first version of the rule "a transfer's two accounts must
 differ" was `CHECK (from_account_id IS DISTINCT FROM to_account_id)`. A reversal has neither
 account, and in SQL `NULL IS DISTINCT FROM NULL` is false, so that rule would have refused every
@@ -208,14 +231,14 @@ Docker must be running; the integration tests start their own temporary PostgreS
 ./mvnw test
 ```
 
-72 tests, and GitHub Actions runs them on every push and pull request.
+106 tests, and GitHub Actions runs them on every push and pull request.
 
 | Kind | Examples |
 |---|---|
 | Database constraints | Negative member balance, self-approval, double reversal, reused idempotency key, non-CAD currency, PostgreSQL rounding a third decimal |
 | Unit tests (Mockito, fixed clock) | Entries must add up to zero, no overdraft, frozen accounts, member numbers, temporary passwords stored only as hashes |
 | API integration tests (MockMvc + PostgreSQL) | Deposits and withdrawals, retries with the same key, a reused key (`422`), 3-decimal amounts, insufficient funds, frozen accounts, who can see which account, login, the temporary-password gate, audit entries |
-| Concurrency (real threads, real PostgreSQL) | 20 withdrawals at once from $100; 20 copies of one request at once |
+| Concurrency (real threads, real PostgreSQL) | 20 withdrawals at once from $100; 20 copies of one request at once; Sam and Priya sending to each other at the same moment; 10 transfers at once against the daily limit; 10 managers approving one request at once; 10 reversals of one transaction at once |
 | Security | CSRF required, roles enforced, Content-Security-Policy header, CSRF cookie readable by JavaScript (real server) |
 
 Planned: a test that runs hundreds of random transactions and then proves the ledger still sums
@@ -246,6 +269,12 @@ All endpoints are under `/api` and use JSON. Errors always look like
 | PUT | `/accounts/{number}/status` | manager | Freeze or unfreeze, with a reason |
 | POST | `/deposits` | teller, manager | Cash deposit (`Idempotency-Key` header required) |
 | POST | `/withdrawals` | teller, manager | Cash withdrawal (`Idempotency-Key` header required) |
+| POST | `/transfers` | member (from own account), teller, manager | Transfer between member accounts (`Idempotency-Key` header required) |
+| GET | `/approvals` | manager | Requests waiting for approval, oldest first |
+| POST | `/approvals/{reference}/approve` | manager (not the requester) | Approve: the money moves now |
+| POST | `/approvals/{reference}/reject` | manager (not the requester) | Reject with a reason |
+| POST | `/transactions/{reference}/reversal` | manager | Undo a posted transaction, with a reason (`Idempotency-Key` header required) |
+| GET | `/audit?entityType=&entityId=` | manager | One record's history, or the latest 100 events |
 | GET | `/transactions/{reference}` | involved member, staff | One transaction and its entries |
 
 A deposit, and what a retry looks like:
@@ -264,7 +293,10 @@ Idempotency-Key: 6f1c2a3e-8b0d-4c1e-9a77-2f4e1d0b9c55
 Sending it again with the same key returns the same body with an `Idempotent-Replayed: true`
 header, and the balance doesn't change.
 
-**Planned:** transfers, approvals, reversals, statements and reports. The full list is in
+Withdrawals and transfers return `201` when the money moved and `202` when the request is
+waiting for a manager.
+
+**Planned:** statements and reports. The full list is in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#5-api-design).
 
 Status codes: `400` invalid input, `401` not logged in, `403` wrong role, missing CSRF token or
@@ -294,13 +326,25 @@ enough money, frozen account), `422` an idempotency key reused for a different r
 - **Look up ids, then lock.** The money code fetches only account ids first and then locks by
   id. Loading the whole account first would leave Hibernate holding a copy from before the
   lock, and the balance check could use it.
+- **The daily limit locks the member, not just the accounts.** Two transfers from different
+  accounts to different people touch no common account, so account locks alone wouldn't make
+  them take turns. Locking the member's own row does, at the cost of one more lock per
+  member transfer.
+- **Maker-checker only where someone else's money is at risk.** Large cash withdrawals and
+  large transfers between different owners wait for a manager. Moving your own money between
+  your own accounts doesn't, because nobody else can lose from it.
+- **No holds while a request waits.** A pending withdrawal doesn't reserve the money, so the
+  balance is checked again at approval and the approval can fail. Holds and an "available
+  balance" are on the list below.
+- **Reversals ignore a freeze.** A freeze stops the member moving money, not a manager fixing a
+  mistake. Reversing a suspicious deposit is often why the account was frozen.
 - **Idempotency checked after the locks.** A retry locks the same accounts as the original, so
   it waits for the original to commit and then finds it, instead of racing it.
 
 ## What I'd add after version 1
 
 - Interest on savings accounts
-- Holds and an "available balance" for pending transfers
+- Holds and an "available balance", so money waiting for approval is set aside
 - Real payment rails (Interac e-Transfer, EFT) instead of internal transfers only
 - Password reset by email
 - A simple fraud rule, such as many transfers in a short time

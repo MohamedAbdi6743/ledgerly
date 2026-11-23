@@ -16,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.ledgerly.entity.Account;
 import com.ledgerly.entity.JournalTransaction;
 import com.ledgerly.entity.LedgerEntry;
+import com.ledgerly.entity.TransactionType;
 import com.ledgerly.exception.BusinessRuleException;
 import com.ledgerly.exception.NotFoundException;
 import com.ledgerly.repository.AccountRepository;
@@ -63,21 +64,7 @@ public class LedgerService {
 	 */
 	@Transactional(propagation = Propagation.MANDATORY)
 	public List<LedgerEntry> post(JournalTransaction transaction, List<Leg> legs) {
-		checkBalanced(legs);
-
-		// Check every leg before changing anything, so the rules read clearly.
-		for (Leg leg : legs) {
-			Account account = leg.account();
-			if (account.isSystem()) {
-				continue; // "Cash on hand" may go negative; it stands for cash that came from outside.
-			}
-			if (!account.isOpen()) {
-				throw new BusinessRuleException("Account " + account.getAccountNumber() + " is frozen.");
-			}
-			if (account.getBalance().add(leg.amount()).signum() < 0) {
-				throw new BusinessRuleException("Insufficient funds in account " + account.getAccountNumber() + ".");
-			}
-		}
+		check(transaction.getType(), legs);
 
 		Instant now = Instant.now(clock);
 		List<LedgerEntry> entries = new ArrayList<>();
@@ -86,6 +73,29 @@ public class LedgerService {
 			entries.add(new LedgerEntry(transaction, leg.account(), leg.amount(), balanceAfter, now));
 		}
 		return ledgerEntryRepository.saveAll(entries);
+	}
+
+	/**
+	 * Every rule post() enforces, without changing anything. A request that waits for approval
+	 * runs this when it's created, so one that could never work is refused right away instead of
+	 * sitting in the manager's queue. (It runs again at approval, since balances change.)
+	 */
+	public void check(TransactionType type, List<Leg> legs) {
+		checkBalanced(legs);
+		for (Leg leg : legs) {
+			Account account = leg.account();
+			if (account.isSystem()) {
+				continue; // "Cash on hand" may go negative; it stands for cash that came from outside.
+			}
+			// A freeze stops the member moving money. It doesn't stop a manager undoing a mistake,
+			// and reversing a suspicious deposit is often exactly why the account was frozen.
+			if (!account.isOpen() && type != TransactionType.REVERSAL) {
+				throw new BusinessRuleException("Account " + account.getAccountNumber() + " is frozen.");
+			}
+			if (account.getBalance().add(leg.amount()).signum() < 0) {
+				throw new BusinessRuleException("Insufficient funds in account " + account.getAccountNumber() + ".");
+			}
+		}
 	}
 
 	/**

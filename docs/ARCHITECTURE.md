@@ -11,7 +11,7 @@ with **reversals**.
 
 This document is the plan to agree on before writing code.
 
-**Status:** milestones 1–3 are built. The milestone list in section 9 says what each one
+**Status:** milestones 1–5 are built. The milestone list in section 9 says what each one
 covers.
 
 ---
@@ -23,11 +23,13 @@ covers.
 - Tellers create members (members don't self-register: a credit union verifies identity
   first) and open **chequing** and **savings** accounts in CAD.
 - Cash deposits and withdrawals at the counter (teller).
-- Transfers between accounts (member from their own accounts, or teller on their behalf).
+- Transfers between member accounts: a member from their own account to any member account,
+  or a teller between any two.
 - Rules: no overdrafts, a daily transfer limit, amounts in whole cents only,
   frozen accounts can't move money.
-- Maker-checker: transfers and cash withdrawals of **$5,000 or more** wait for a manager,
-  who must be a different person from whoever created them.
+- Maker-checker: cash withdrawals of **$5,000 or more**, and transfers of $5,000 or more
+  between different owners, wait for a manager, who must be a different person from whoever
+  created them.
 - Reversals by managers, with a reason. The original stays; an opposite transaction is added.
 - Monthly statements with opening balance, running balance and closing balance.
 - Reconciliation report: proves the whole ledger sums to zero and every stored balance
@@ -130,8 +132,10 @@ member balance even if the Java code had a bug.
 
 ### 2.6 Maker-checker
 
-A transfer of $5,000 or more isn't posted immediately. It's saved as `PENDING_APPROVAL`
-with no ledger entries. A manager approves (the balance is checked again at that moment,
+A cash withdrawal of $5,000 or more, or a transfer of $5,000 or more between different owners,
+isn't posted immediately (the threshold is `ledgerly.approvals.threshold`). It's checked
+against the current balance, then saved as `PENDING_APPROVAL` with no ledger entries and
+answered with `202`. Approving locks the request's row, then its accounts. A manager approves (the balance is checked again at that moment,
 and entries are written) or rejects it with a reason. The system refuses an approval by the
 same person who created it, whatever their role.
 
@@ -292,11 +296,11 @@ different request → `422`).
 | PUT | `/accounts/{number}/status` | manager | Freeze / unfreeze, with a reason | 200 | 400 system account, 404, 409 already in that state |
 | POST | `/deposits` | teller, manager | Cash deposit | 201 | 400, 409 frozen, 422 key reused |
 | POST | `/withdrawals` | teller, manager | Cash withdrawal | 201 posted / 202 pending (from M5) | 409 insufficient funds or frozen, 422 key reused |
-| POST | `/transfers` | member (own accounts), teller | Transfer | 201 posted / 202 pending | 409 funds, limit, frozen |
+| POST | `/transfers` | member (from own account), teller, manager | Transfer | 201 posted / 202 pending (from M5) | 400 same or system account, 404 not your account, 409 funds, limit, frozen, 422 key reused |
 | GET | `/transactions/{reference}` | involved member, staff | One transaction with its entries | 200 | 404 |
 | GET | `/approvals` | manager | Pending queue | 200 | |
-| POST | `/approvals/{reference}/approve` · `/reject` | manager (not the creator) | Decide | 200 | 403 own request, 409 no longer enough funds |
-| POST | `/transactions/{reference}/reversal` | manager | Reverse with reason | 201 | 409 already reversed / would overdraw |
+| POST | `/approvals/{reference}/approve` · `/reject` | manager (not the creator) | Decide (reject needs a reason) | 200 | 403 own request, 409 already decided or no longer enough funds |
+| POST | `/transactions/{reference}/reversal` | manager | Reverse with reason (Idempotency-Key) | 201 | 409 already reversed, pending, a reversal, or would overdraw |
 | GET | `/accounts/{number}/statement?month=2026-11` | owner, staff | Monthly statement | 200 | 400 bad month |
 | GET | `/reports/reconciliation` | manager | Ledger proof | 200 | |
 | GET | `/reports/large-cash?from=&to=` | manager | Cash deposits ≥ $10,000 | 200 | |
@@ -415,9 +419,11 @@ secrets live in the host's environment variables.
 3. **Accounts and the ledger core (built):** `LedgerService`, cash deposits and
    withdrawals with row locks. Idempotency keys, fingerprints, id-ordered locking and the
    first concurrency tests were pulled forward from milestone 4, because cash needed them too.
-4. **Transfers:** member transfers between accounts, the daily limit, more concurrency tests
-   (opposite-direction transfers must not deadlock).
-5. **Maker-checker, reversals and audit log.**
+4. **Transfers (built):** member and teller transfers, the daily limit ($3,000 a day to other
+   people, Toronto calendar days, enforced under a lock on the sending member), and
+   concurrency tests for opposite-direction transfers and the limit.
+5. **Maker-checker, reversals and audit log (built):** pending requests, approve and reject
+   under a row lock, reversals (allowed on frozen accounts), `GET /audit`.
 6. **Statements, reconciliation and the large cash report;** the invariant test.
 7. **Frontend: member pages.**
 8. **Frontend: staff pages.**

@@ -3,9 +3,8 @@
 Plain-English notes on the design. The formal version, with every table and endpoint, is in
 [ARCHITECTURE.md](ARCHITECTURE.md). This one is about the *why*.
 
-Status: milestones 1 to 3 are built (database, login, accounts, cash deposits and
-withdrawals). Transfers, approvals and reports come later, so those sections describe how they
-will work.
+Status: milestones 1 to 5 are built (database, login, accounts, cash, transfers, approvals,
+reversals). Statements and reports come later.
 
 ---
 
@@ -13,8 +12,8 @@ will work.
 
 Ledgerly is the back office of a small Canadian credit union. Three kinds of people use it:
 
-- **Members** have chequing and savings accounts. They check balances and move money between
-  their own accounts.
+- **Members** have chequing and savings accounts. They check balances, move money between
+  their own accounts, and send money to other members.
 - **Tellers** work the counter. They sign up new members, open accounts, and take cash in or
   pay it out.
 - **Managers** do everything a teller can, plus approve big transfers, undo mistakes, and run
@@ -92,6 +91,21 @@ posts a **reversal**: a new transaction with the opposite entries, linked to the
 reason. Then the teller posts the right amount. Anyone reading the history later sees exactly
 what happened, mistake included. Banks work this way because auditors need the full story.
 
+The reversal's entries are the original's with the signs flipped: a $500 deposit wrote
++500 for Priya and -500 for the cash drawer, so its reversal writes -500 for Priya and +500
+for the drawer. The original says "reversed by TX-...", the reversal says "reverses TX-...".
+
+A few things can't be reversed:
+
+- Something already reversed. The database backs this up: `reverses_id` is unique.
+- A reversal itself. To fix a wrong reversal, post a new transaction.
+- A request still waiting for approval. Nothing has moved yet, so it's rejected instead.
+- A deposit whose money has since been spent. If Priya deposited $100 and took out $80,
+  reversing the deposit would leave her at -$80, so it's refused.
+
+A freeze doesn't block a reversal. Freezing stops the member moving money. Reversing a
+suspicious deposit is often exactly why a manager froze the account.
+
 ---
 
 ## Making money movements safe
@@ -124,13 +138,29 @@ can never grab the locks in opposite orders.
 
 ### Big transfers need a second person (maker-checker)
 
-Transfers and cash withdrawals of $5,000 or more don't happen right away. They're saved as
-"pending approval" with no ledger entries yet. A manager has to approve or reject them, and the
-person who created a request can never approve it. Banks call this the four-eyes rule. It
+Cash withdrawals of $5,000 or more, and transfers of $5,000 or more to someone else, don't happen
+right away. They're saved as "pending approval" with no ledger entries, and the answer is HTTP
+202 ("accepted, not done yet") instead of 201. A manager has to approve or reject them, and the
+person who created a request can never decide on it. Banks call this the four-eyes rule. It
 means one person alone can't move a large amount of money.
 
 That rule is checked in the Java code and again in the database
 (`CHECK (approved_by <> created_by)`).
+
+Moving your own money between your own accounts doesn't need approval, however large. Nobody
+else's money is at risk.
+
+When a request comes in, Ledgerly checks it could go through right now (enough money, account
+not frozen) and refuses it straight away if not, so the manager's queue only holds real
+requests. But the money isn't held while it waits. If Sam's balance drops in the meantime, the
+approval runs every check again and fails with "insufficient funds", and the request stays in
+the queue for the manager to reject.
+
+Approving locks the request's row first. Two managers clicking Approve at the same moment take
+turns: the first posts it, the second is told it's already been decided. A test runs ten
+approvals at once and checks the money moves once. Without that lock, three went through.
+
+Rejecting needs a reason, and the member can see it on the transaction.
 
 ---
 
@@ -255,6 +285,42 @@ To make sure the test can actually fail, the lock was taken out once and the tes
 All 20 withdrawals "worked". Each thread read $100, took off $10, and saved $90, so $200 in
 cash came out of a $100 account. That's the bug the lock exists to stop.
 
+### Transfers (milestone 4)
+
+A member can send money from one of their own accounts to any member account: their own
+savings, or Priya's chequing. A teller can move money between any two member accounts, for
+someone at the counter. "Cash on hand" is never part of a transfer; cash goes through a teller.
+
+A transfer writes two entries: minus on the account it leaves, plus on the account it arrives
+in. Same rules as before: it adds up to zero, no account goes below zero, nothing moves through
+a frozen account.
+
+### The daily limit
+
+A member can send at most $3,000 a day to other people. Moving money between your own
+accounts doesn't count, and neither do transfers staff make. If Sam has sent $2,500 today and
+tries $600, the answer says he can still send $500.
+
+"Today" means a calendar day in Toronto. At 11 p.m. in Toronto it's already tomorrow in UTC,
+and the limit shouldn't reset at 7 p.m. There's a test for the night the clocks go back, when a
+Toronto day is 25 hours long.
+
+The tricky part is two transfers at once. Sam sends $1,000 from chequing to Priya and, at the
+same moment, $1,000 from savings to Alex. The two transfers share no account, so account locks
+don't make them wait for each other. Both read "$2,500 sent today" and both go through. So a
+member's transfer first locks that member's own row in `app_user`. The second transfer waits,
+then sees $3,500 and is refused.
+
+### Lock order
+
+Every request takes its locks in the same order: the sending member first (for member
+transfers), then the accounts, lowest id first. Because everyone grabs locks in the same order,
+two requests can't each be holding what the other one needs.
+
+A test checks this. Sam and Priya send each other $10, 20 times, all at the same moment. With
+the fixed order every transfer finishes. With the accounts locked in request order instead,
+PostgreSQL found a deadlock and killed one of them.
+
 ### Freezing
 
 A manager can freeze an account (a stolen card, a fraud check) and has to give a reason, which
@@ -293,8 +359,11 @@ Every error comes back in the same JSON shape, so the frontend handles them all 
   the way a browser does.
 - **CI** runs everything on GitHub for every push and pull request.
 
-- **Concurrency tests** start 20 real threads at once against a real database: 20 withdrawals
-  from one account, and 20 copies of the same request with one idempotency key.
+- **Concurrency tests** start real threads at once against a real database: 20 withdrawals
+  from one account, 20 copies of the same request with one idempotency key, Sam and Priya
+  sending to each other at the same moment, and ten transfers at once against the daily limit.
+  Each one was checked by taking its lock out and watching the test fail. Ten managers
+  approving one request at once, and ten reversals of one transaction, are covered too.
 
 Coming later: a test that throws hundreds of random transactions at the ledger and then checks
 that everything still sums to zero.
@@ -303,8 +372,6 @@ that everything still sums to zero.
 
 | Milestone | What gets built |
 |---|---|
-| 4 | Transfers between accounts, the daily limit, deadlock tests |
-| 5 | Approvals, reversals, more audit events |
 | 6 | Statements, the reconciliation report, the large-cash report |
 | 7-8 | The web pages |
 | 9 | Putting a live demo online |

@@ -59,10 +59,35 @@ final class ApiTestSupport {
 	}
 
 	static MockHttpSession activeTeller(MockMvc mockMvc, String email) throws Exception {
+		return activeStaff(mockMvc, email, "TELLER");
+	}
+
+	/** A second manager, for the four-eyes rule (the first one comes from settings). */
+	static MockHttpSession activeManager(MockMvc mockMvc, String email) throws Exception {
+		return activeStaff(mockMvc, email, "MANAGER");
+	}
+
+	private static MockHttpSession activeStaff(MockMvc mockMvc, String email, String role) throws Exception {
 		String json = create(mockMvc, loginAsManager(mockMvc), "/api/staff", """
-				{ "fullName": "Dana Lee", "email": "%s", "role": "TELLER" }
-				""".formatted(email));
+				{ "fullName": "Dana Lee", "email": "%s", "role": "%s" }
+				""".formatted(email, role));
 		return activate(mockMvc, email, json);
+	}
+
+	/** POST /api/transfers with a fresh Idempotency-Key. */
+	static ResultActions transfer(MockMvc mockMvc, MockHttpSession session, String from, String to, String amount)
+			throws Exception {
+		return mockMvc.perform(post("/api/transfers").with(csrf()).session(session)
+				.header("Idempotency-Key", java.util.UUID.randomUUID().toString())
+				.contentType(MediaType.APPLICATION_JSON)
+				.content("""
+						{ "fromAccount": "%s", "toAccount": "%s", "amount": "%s" }
+						""".formatted(from, to, amount)));
+	}
+
+	/** Reads one field from a JSON response body. */
+	static String field(ResultActions result, String jsonPath) throws Exception {
+		return JsonPath.read(result.andReturn().getResponse().getContentAsString(), jsonPath);
 	}
 
 	/** A member who has logged in and picked their own password. */

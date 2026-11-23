@@ -28,8 +28,8 @@ import com.ledgerly.repository.LedgerEntryRepository;
 import com.ledgerly.service.LedgerService.Leg;
 
 /**
- * Cash deposits and withdrawals at the counter. Transfers arrive in milestone 4, and
- * approvals for large amounts in milestone 5 (until then, withdrawals post right away).
+ * Cash deposits and withdrawals at the counter. Transfers are in TransferService.
+ * Withdrawals of $5,000 or more wait for a manager (see ApprovalPolicy and ApprovalService).
  */
 @Service
 public class PaymentService {
@@ -50,12 +50,13 @@ public class PaymentService {
 	private final IdempotencyService idempotencyService;
 	private final ReferenceGenerator referenceGenerator;
 	private final UserService userService;
+	private final ApprovalPolicy approvalPolicy;
 	private final Clock clock;
 
 	public PaymentService(AccountRepository accountRepository, JournalTransactionRepository journalTransactionRepository,
 			LedgerEntryRepository ledgerEntryRepository, LedgerService ledgerService,
 			IdempotencyService idempotencyService, ReferenceGenerator referenceGenerator, UserService userService,
-			Clock clock) {
+			ApprovalPolicy approvalPolicy, Clock clock) {
 		this.accountRepository = accountRepository;
 		this.journalTransactionRepository = journalTransactionRepository;
 		this.ledgerEntryRepository = ledgerEntryRepository;
@@ -63,6 +64,7 @@ public class PaymentService {
 		this.idempotencyService = idempotencyService;
 		this.referenceGenerator = referenceGenerator;
 		this.userService = userService;
+		this.approvalPolicy = approvalPolicy;
 		this.clock = clock;
 	}
 
@@ -106,19 +108,28 @@ public class PaymentService {
 		}
 
 		boolean deposit = (type == TransactionType.DEPOSIT);
+		Account from = deposit ? null : memberAccount;   // a withdrawal takes money from the member
+		Account to = deposit ? memberAccount : null;     // a deposit puts money into the member's account
+		List<Leg> legs = deposit ? Legs.deposit(memberAccount, cash, amount) : Legs.withdrawal(memberAccount, cash, amount);
+		String reference = referenceGenerator.next();
+		Instant now = Instant.now(clock);
+
+		// Large withdrawals wait for a manager. Check now that it could go through, so a request
+		// that never could doesn't sit in the queue, but move no money yet.
+		if (!deposit && approvalPolicy.withdrawalNeedsApproval(amount)) {
+			ledgerService.check(type, legs);
+			JournalTransaction pending = journalTransactionRepository.save(JournalTransaction.pending(
+					reference, type, amount, from, to, description, staff, idempotencyKey, fingerprint, now));
+			log.info("User {} requested {} {} of {} on account id {}, waiting for approval", staff.getId(), type,
+					reference, Money.toText(amount), memberAccountId);
+			return new PaymentResult(TransactionResponse.from(pending, List.of()), false);
+		}
+
 		JournalTransaction transaction = journalTransactionRepository.save(JournalTransaction.posted(
-				referenceGenerator.next(), type, amount,
-				deposit ? null : memberAccount,   // a withdrawal takes money from the member
-				deposit ? memberAccount : null,   // a deposit puts money into the member's account
-				description, staff, idempotencyKey, fingerprint, Instant.now(clock)));
+				reference, type, amount, from, to, description, staff, idempotencyKey, fingerprint, now));
+		List<LedgerEntry> entries = ledgerService.post(transaction, legs);
 
-		// Deposit:    member +amount, cash drawer -amount.
-		// Withdrawal: member -amount, cash drawer +amount.
-		BigDecimal toMember = deposit ? amount : amount.negate();
-		List<LedgerEntry> entries = ledgerService.post(transaction,
-				List.of(new Leg(memberAccount, toMember), new Leg(cash, toMember.negate())));
-
-		log.info("User {} posted {} {} of {} on account id {}", staff.getId(), type, transaction.getReference(),
+		log.info("User {} posted {} {} of {} on account id {}", staff.getId(), type, reference,
 				Money.toText(amount), memberAccountId);
 		return new PaymentResult(TransactionResponse.from(transaction, entries), false);
 	}
