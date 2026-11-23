@@ -23,6 +23,14 @@ public interface UserRepository extends JpaRepository<AppUser, Long> {
 	@Query(value = "SELECT nextval('member_number_seq')", nativeQuery = true)
 	long nextMemberNumber();
 
+	/**
+	 * Locks one user's row until the transaction ends. Transfers lock the sending member first,
+	 * so two transfers by the same person run one after the other and can't both slip under
+	 * the daily limit. Native SQL because only the lock matters, not the returned row.
+	 */
+	@Query(value = "SELECT id FROM app_user WHERE id = :id FOR UPDATE", nativeQuery = true)
+	Long lockById(@Param("id") Long id);
+
 	/** Members whose name, email or member number contains the text (case-insensitive). */
 	@Query("""
 			SELECT u FROM AppUser u
