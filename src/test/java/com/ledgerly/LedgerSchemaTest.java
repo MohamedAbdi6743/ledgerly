@@ -40,7 +40,9 @@ class LedgerSchemaTest {
 	void createPeopleAndAccounts() {
 		teller = insertUser("dana@ledgerly.test", "TELLER", null);
 		manager = insertUser("omar@ledgerly.test", "MANAGER", null);
-		sam = insertUser("sam@example.com", "MEMBER", "M000001");
+		// Not "M000001": the app hands out M-numbers from a sequence, and tests that commit
+		// (like the concurrency test) may already have used the first ones.
+		sam = insertUser("sam@example.com", "MEMBER", "TEST-0001");
 		samChequing = insertAccount("100200300401", sam, "CHEQUING");
 		samSavings = insertAccount("100200300402", sam, "SAVINGS");
 	}
@@ -102,7 +104,7 @@ class LedgerSchemaTest {
 
 	@Test
 	void staffCannotHaveAMemberNumber() {
-		assertThatThrownBy(() -> insertUser("lee@ledgerly.test", "TELLER", "M000002"))
+		assertThatThrownBy(() -> insertUser("lee@ledgerly.test", "TELLER", "TEST-0002"))
 				.isInstanceOf(DataIntegrityViolationException.class)
 				.hasMessageContaining("app_user_member_number");
 	}
