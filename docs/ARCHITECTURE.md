@@ -277,6 +277,8 @@ Money endpoints **require** an `Idempotency-Key` header (missing → `400`).
 |---|---|---|---|---|---|
 | POST | `/auth/login` · `/auth/logout` | anyone / logged in | Session login / logout | 200 / 204 | 401 |
 | GET | `/auth/me` · `/auth/csrf` | logged in / anyone | Current user / CSRF cookie | 200 / 204 | 401 |
+| POST | `/auth/password` | logged in | Change own password (12–72 characters) | 204 | 400 wrong current password |
+| POST | `/staff` | manager | Create a teller or manager (temporary password) | 201 | 400, 409 email taken |
 | POST | `/members` | teller, manager | Create a member (temporary password) | 201 | 400, 409 email taken |
 | GET | `/members?query=` · `/members/{id}` | teller, manager | Search / view a member | 200 | 404 |
 | POST | `/members/{id}/accounts` | teller, manager | Open chequing or savings | 201 | 404 |
@@ -385,7 +387,11 @@ no extra infrastructure. *Alternative:* a separate key store or Redis (not neede
 can fail then. *If it grew:* "available balance" with holds.
 
 **D6. Members are created by staff, not self-registered.** Matches how a credit union
-verifies identity. Members get a temporary password and must change it on first login.
+verifies identity. New members and staff get a temporary password (shown once, stored only
+as a BCrypt hash) and must change it before using anything else: a check that runs before
+every `/api` request (except `/api/auth/**`) returns `403` until they do. It reads the flag
+from the database each time, so the change takes effect immediately. Member numbers come
+from a PostgreSQL sequence so two tellers can never hand out the same one.
 
 **D7. `TIMESTAMPTZ` for money events** (see the database section).
 
