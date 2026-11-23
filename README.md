@@ -8,9 +8,9 @@ reverse mistakes and check that the books balance.
 
 Built with Java, Spring Boot and PostgreSQL. The web pages (plain TypeScript) come later.
 
-**Status:** work in progress. The database schema, staff-created accounts and login are built
-(milestones 1–2 of 10). Moving money starts in milestone 3. Each section below says what's
-built and what's planned.
+**Status:** work in progress. The schema, login, accounts, and cash deposits and withdrawals
+are built (milestones 1–3 of 10). Transfers come next. Each section below says what's built
+and what's planned.
 
 ## Why I built it
 
@@ -36,15 +36,22 @@ Ledgerly is built around them:
 - Member numbers (`M000001`, …) from a database sequence
 - One-time temporary passwords for new accounts, which must be changed before anything else works
 - Session login and logout, roles (member, teller, manager), member search
-- An audit log of staff actions and password changes
+- Chequing and savings accounts with numbers from a database sequence (`100200000001`, …)
+- Cash deposits and withdrawals at the counter. Each one writes two ledger entries that add up
+  to zero: the member's account and "Cash on hand"
+- Every money request needs an `Idempotency-Key`. A retry gets the original result back and
+  moves no money; reusing a key for a different request gets a `422`
+- Row locks, so two withdrawals at the same moment can't both spend the same money
+- Members see only their own accounts and transactions. Anyone else's look "not found"
+- Managers can freeze and unfreeze an account, with a reason that goes in the audit log
+- An audit log of staff actions, password changes, and account openings and freezes
 - The full ledger schema, with the money rules enforced by PostgreSQL itself
 
 **Planned**
 
 | Milestone | What |
 |---|---|
-| 3 | Open chequing and savings accounts; cash deposits and withdrawals that write balanced ledger entries under a row lock |
-| 4 | Transfers with idempotency keys, a daily limit, and deadlock-free locking |
+| 4 | Transfers between accounts, a daily limit, deadlock tests |
 | 5 | Maker-checker approvals for $5,000+, reversals |
 | 6 | Monthly statements, a reconciliation report, a report of cash deposits of $10,000+ |
 | 7–8 | Web pages for members and staff |
@@ -136,8 +143,16 @@ writes `-50.00` and `+50.00`. A $200 cash deposit writes `+200.00` to the member
 to zero, so the whole ledger always sums to zero, and the reconciliation report (milestone 6)
 checks that, along with every cached balance against its entries.
 
-The money-moving code arrives in milestones 3–4. The rules it depends on are already in the
-database and tested.
+All of that goes through one class, `LedgerService`. It's the only code that writes entries
+or changes a balance, and it refuses any set of entries that doesn't add up to zero.
+
+**Proof the row lock matters.** There's a test that fires 20 withdrawals of $10 at an account
+holding $100, all at the same instant. Exactly 10 succeed and the balance ends at $0.00. With
+the lock taken out, all 20 "succeeded": each thread read $100 and wrote back $90, so the
+member got $200 in cash from a $100 account. A second test sends the same request 20 times at
+once with one idempotency key. With the lock it posts once and the other 19 get the original
+back. Without it, the copies race each other and crash on the database's unique key. That
+still stops the double payment, but the caller gets an error instead of the original result.
 
 **A bug the schema tests caught.** The first version of the rule "a transfer's two accounts must
 differ" was `CHECK (from_account_id IS DISTINCT FROM to_account_id)`. A reversal has neither
@@ -193,17 +208,18 @@ Docker must be running; the integration tests start their own temporary PostgreS
 ./mvnw test
 ```
 
-48 tests, and GitHub Actions runs them on every push and pull request.
+72 tests, and GitHub Actions runs them on every push and pull request.
 
 | Kind | Examples |
 |---|---|
 | Database constraints | Negative member balance, self-approval, double reversal, reused idempotency key, non-CAD currency, PostgreSQL rounding a third decimal |
-| Unit tests (Mockito, fixed clock) | Member numbers, temporary passwords stored only as hashes, wrong current password |
-| API integration tests (MockMvc + PostgreSQL) | Login and logout, the temporary-password gate, password rules, who can create whom, member search, audit entries |
+| Unit tests (Mockito, fixed clock) | Entries must add up to zero, no overdraft, frozen accounts, member numbers, temporary passwords stored only as hashes |
+| API integration tests (MockMvc + PostgreSQL) | Deposits and withdrawals, retries with the same key, a reused key (`422`), 3-decimal amounts, insufficient funds, frozen accounts, who can see which account, login, the temporary-password gate, audit entries |
+| Concurrency (real threads, real PostgreSQL) | 20 withdrawals at once from $100; 20 copies of one request at once |
 | Security | CSRF required, roles enforced, Content-Security-Policy header, CSRF cookie readable by JavaScript (real server) |
 
 Planned: a test that runs hundreds of random transactions and then proves the ledger still sums
-to zero, and tests where many threads hit the same account at once.
+to zero.
 
 ## API
 
@@ -223,13 +239,37 @@ All endpoints are under `/api` and use JSON. Errors always look like
 | POST | `/members` | teller, manager | Create a member (temporary password) |
 | GET | `/members?query=` | teller, manager | Search members by name, email or member number |
 | GET | `/members/{id}` | teller, manager | One member |
+| POST | `/members/{id}/accounts` | teller, manager | Open a chequing or savings account |
+| GET | `/members/{id}/accounts` | teller, manager | A member's accounts |
+| GET | `/me/accounts` | member | My accounts |
+| GET | `/accounts/{number}` | owner, staff | An account with its last 20 entries and running balance |
+| PUT | `/accounts/{number}/status` | manager | Freeze or unfreeze, with a reason |
+| POST | `/deposits` | teller, manager | Cash deposit (`Idempotency-Key` header required) |
+| POST | `/withdrawals` | teller, manager | Cash withdrawal (`Idempotency-Key` header required) |
+| GET | `/transactions/{reference}` | involved member, staff | One transaction and its entries |
 
-**Planned:** accounts, deposits, withdrawals, transfers (all with an `Idempotency-Key` header),
-approvals, reversals, statements and reports. The full list is in
+A deposit, and what a retry looks like:
+
+```http
+POST /api/deposits
+Idempotency-Key: 6f1c2a3e-8b0d-4c1e-9a77-2f4e1d0b9c55
+{ "accountNumber": "100200000001", "amount": "200.00", "description": "Paycheque" }
+
+201 Created
+{ "reference": "TX-H28C36GS", "type": "DEPOSIT", "status": "POSTED", "amount": "200.00",
+  "entries": [ { "accountNumber": "100200000001", "amount": "200.00" },
+               { "accountNumber": "000000000001", "amount": "-200.00" } ], ... }
+```
+
+Sending it again with the same key returns the same body with an `Idempotent-Replayed: true`
+header, and the balance doesn't change.
+
+**Planned:** transfers, approvals, reversals, statements and reports. The full list is in
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#5-api-design).
 
 Status codes: `400` invalid input, `401` not logged in, `403` wrong role, missing CSRF token or
-still on a temporary password, `404` not found, `409` valid input that breaks a rule.
+still on a temporary password, `404` not found, `409` valid input that breaks a rule (not
+enough money, frozen account), `422` an idempotency key reused for a different request.
 
 ## Decisions and trade-offs
 
@@ -249,8 +289,13 @@ still on a temporary password, `404` not found, `409` valid input that breaks a 
   exist without its change, or the other way round.
 - **`TIMESTAMPTZ` in UTC.** Money events need exact, unambiguous times, and a deployed server may
   not run in Toronto time.
-- **Planned: pessimistic locks in id order.** Simple and deadlock-free. Optimistic locking would
-  need retry logic for the same result.
+- **Pessimistic locks, taken in account-id order.** Simple, and two requests can never wait on
+  each other in a circle. Optimistic locking would need retry logic for the same result.
+- **Look up ids, then lock.** The money code fetches only account ids first and then locks by
+  id. Loading the whole account first would leave Hibernate holding a copy from before the
+  lock, and the balance check could use it.
+- **Idempotency checked after the locks.** A retry locks the same accounts as the original, so
+  it waits for the original to commit and then finds it, instead of racing it.
 
 ## What I'd add after version 1
 

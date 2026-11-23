@@ -3,8 +3,9 @@
 Plain-English notes on the design. The formal version, with every table and endpoint, is in
 [ARCHITECTURE.md](ARCHITECTURE.md). This one is about the *why*.
 
-Status: milestones 1 and 2 are built (database, accounts for people, login). Money movement
-starts in milestone 3, so some sections below describe how it will work.
+Status: milestones 1 to 3 are built (database, login, accounts, cash deposits and
+withdrawals). Transfers, approvals and reports come later, so those sections describe how they
+will work.
 
 ---
 
@@ -198,8 +199,7 @@ only run scripts from our own site.
 - The URL rules in `SecurityConfig`: only managers can create staff, and only tellers and managers
   can create or look up members.
 - Rules about owning things ("a member can only see their own accounts") live in the services,
-  because a URL rule can't know who owns account 100200300401. Those arrive with accounts in
-  milestone 3.
+  because a URL rule can't know who owns account 100200000001.
 
 ### Audit log
 
@@ -207,6 +207,59 @@ Every staff action and password change writes a row to `audit_event`: who, what,
 when. The audit service uses `Propagation.MANDATORY`, which means it can only run inside the same
 transaction as the change it describes. So you can't end up with a change and no audit line, or
 an audit line for a change that got rolled back.
+
+---
+
+## Accounts and cash (milestone 3)
+
+### Opening an account
+
+A teller opens a chequing or savings account for a member. The number comes from another
+PostgreSQL sequence, with `1002` in front: `100200000001`, `100200000002`, and so on. Every
+account starts at $0.00 in Canadian dollars.
+
+A member can look at their own accounts and nobody else's. If Sam types in Priya's account
+number, he gets "not found", the same answer as for a number that doesn't exist. Saying
+"forbidden" would tell him the account is real.
+
+### A cash deposit, step by step
+
+Sam hands the teller $200. Here's what happens inside one database transaction:
+
+1. Check the `Idempotency-Key` header is there and looks right.
+2. Look up the ids of Sam's account and "Cash on hand". Only the ids, not the whole rows.
+3. Lock both rows, lowest id first.
+4. Has this teller already sent this key? If so, send back that result and stop.
+5. Save the transaction (`TX-H28C36GS`, DEPOSIT, $200.00).
+6. `LedgerService` checks the entries (+200.00 for Sam, -200.00 for the cash drawer) add up to
+   zero, that Sam's account isn't frozen, and that nothing goes below zero. Then it writes both
+   entries and updates both balances.
+7. Commit. The locks are released.
+
+A withdrawal is the same with the signs flipped. If anything fails along the way, the whole
+thing rolls back, so you never get one entry without the other.
+
+Why step 2 fetches only ids: if the code loaded the whole account first, Hibernate would keep
+that copy in memory, and when the lock was finally granted it would hand back the same old
+copy, without the balance another request had just changed.
+
+Why step 4 comes after the locks: a retry locks the same two accounts as the original, so it
+waits in line. By the time it gets the lock, the original has committed, and the check finds it.
+
+### Proving the lock works
+
+One test starts 20 threads at the same instant, each withdrawing $10 from an account holding
+$100. Exactly 10 work, 10 get "insufficient funds", and the balance ends at $0.00.
+
+To make sure the test can actually fail, the lock was taken out once and the test run again.
+All 20 withdrawals "worked". Each thread read $100, took off $10, and saved $90, so $200 in
+cash came out of a $100 account. That's the bug the lock exists to stop.
+
+### Freezing
+
+A manager can freeze an account (a stolen card, a fraud check) and has to give a reason, which
+goes in the audit log. A frozen account can't take deposits or withdrawals until it's
+unfrozen. "Cash on hand" can't be frozen.
 
 ---
 
@@ -223,7 +276,8 @@ Every error comes back in the same JSON shape, so the frontend handles them all 
 - 401: not logged in
 - 403: logged in but not allowed, or still on a temporary password
 - 404: doesn't exist
-- 409: the input is fine but it breaks a rule (email taken, not enough money)
+- 409: the input is fine but it breaks a rule (email taken, not enough money, frozen account)
+- 422: an idempotency key was reused for a different request
 
 ## How it's tested
 
@@ -239,15 +293,17 @@ Every error comes back in the same JSON shape, so the frontend handles them all 
   the way a browser does.
 - **CI** runs everything on GitHub for every push and pull request.
 
+- **Concurrency tests** start 20 real threads at once against a real database: 20 withdrawals
+  from one account, and 20 copies of the same request with one idempotency key.
+
 Coming later: a test that throws hundreds of random transactions at the ledger and then checks
-that everything still sums to zero, and tests where many threads hit the same account at once.
+that everything still sums to zero.
 
 ## What's next
 
 | Milestone | What gets built |
 |---|---|
-| 3 | Opening accounts, cash deposits and withdrawals, the code that writes ledger entries |
-| 4 | Transfers, idempotency keys, the daily limit, lock ordering |
+| 4 | Transfers between accounts, the daily limit, deadlock tests |
 | 5 | Approvals, reversals, more audit events |
 | 6 | Statements, the reconciliation report, the large-cash report |
 | 7-8 | The web pages |
