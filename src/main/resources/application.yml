@@ -26,3 +26,10 @@ spring:
 
 server:
   port: ${APP_PORT:8080}
+
+ledgerly:
+  # The first manager, created at startup if this email doesn't exist yet.
+  admin:
+    email: ${LEDGERLY_ADMIN_EMAIL:}
+    password: ${LEDGERLY_ADMIN_PASSWORD:}
+    name: ${LEDGERLY_ADMIN_NAME:Branch Manager}
