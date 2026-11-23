@@ -1,0 +1,23 @@
+# Local development database.
+# Start it with:  docker compose up -d
+# Stop it with:   docker compose down        (data is kept in the volume)
+# Docker Compose reads DB_PORT, DB_USERNAME and DB_PASSWORD from the .env file.
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: ledgerly
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      # Only reachable from this computer. Change DB_PORT in .env if 5441 is taken.
+      - "127.0.0.1:${DB_PORT:-5441}:5432"
+    volumes:
+      - ledgerly-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME} -d ledgerly"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  ledgerly-data:

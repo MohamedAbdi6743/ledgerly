@@ -1,0 +1,28 @@
+spring:
+  application:
+    name: Ledgerly
+
+  # Load local settings (database password etc.) from the .env file if it exists.
+  config:
+    import: optional:file:.env[.properties]
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5441/ledgerly}
+    username: ${DB_USERNAME:ledgerly}
+    password: ${DB_PASSWORD:}
+
+  jpa:
+    hibernate:
+      # Flyway creates and changes tables. Hibernate only checks they match our entities.
+      ddl-auto: validate
+    # Keep database work inside the service layer instead of during JSON rendering.
+    open-in-view: false
+    properties:
+      hibernate:
+        # Money events are stored as exact moments (TIMESTAMPTZ). Talk to the database in UTC
+        # so the result never depends on the server's own time zone.
+        jdbc:
+          time_zone: UTC
+
+server:
+  port: ${APP_PORT:8080}
