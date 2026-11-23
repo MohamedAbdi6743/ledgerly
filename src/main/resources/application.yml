@@ -33,3 +33,9 @@ ledgerly:
     email: ${LEDGERLY_ADMIN_EMAIL:}
     password: ${LEDGERLY_ADMIN_PASSWORD:}
     name: ${LEDGERLY_ADMIN_NAME:Branch Manager}
+
+  # "Today" for the daily transfer limit means today in the credit union's own time zone.
+  time-zone: America/Toronto
+  transfers:
+    # Most a member can send per day to accounts they don't own. Their own accounts don't count.
+    daily-limit: 3000.00

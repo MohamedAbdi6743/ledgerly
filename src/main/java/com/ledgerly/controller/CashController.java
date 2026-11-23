@@ -57,7 +57,7 @@ public class CashController {
 	}
 
 	/** A retry gets the same status and body as the first try, plus a header saying it was a replay. */
-	private static ResponseEntity<TransactionResponse> created(PaymentResult result) {
+	static ResponseEntity<TransactionResponse> created(PaymentResult result) {
 		ResponseEntity.BodyBuilder response = ResponseEntity.status(HttpStatus.CREATED);
 		if (result.replayed()) {
 			response.header(REPLAYED, "true");

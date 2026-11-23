@@ -28,8 +28,8 @@ import com.ledgerly.repository.LedgerEntryRepository;
 import com.ledgerly.service.LedgerService.Leg;
 
 /**
- * Cash deposits and withdrawals at the counter. Transfers arrive in milestone 4, and
- * approvals for large amounts in milestone 5 (until then, withdrawals post right away).
+ * Cash deposits and withdrawals at the counter. Transfers are in TransferService.
+ * Approvals for large amounts arrive in milestone 5 (until then, withdrawals post right away).
  */
 @Service
 public class PaymentService {

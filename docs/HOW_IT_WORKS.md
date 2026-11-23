@@ -3,9 +3,8 @@
 Plain-English notes on the design. The formal version, with every table and endpoint, is in
 [ARCHITECTURE.md](ARCHITECTURE.md). This one is about the *why*.
 
-Status: milestones 1 to 3 are built (database, login, accounts, cash deposits and
-withdrawals). Transfers, approvals and reports come later, so those sections describe how they
-will work.
+Status: milestones 1 to 4 are built (database, login, accounts, cash, transfers). Approvals,
+reversals and reports come later, so those sections describe how they will work.
 
 ---
 
@@ -13,8 +12,8 @@ will work.
 
 Ledgerly is the back office of a small Canadian credit union. Three kinds of people use it:
 
-- **Members** have chequing and savings accounts. They check balances and move money between
-  their own accounts.
+- **Members** have chequing and savings accounts. They check balances, move money between
+  their own accounts, and send money to other members.
 - **Tellers** work the counter. They sign up new members, open accounts, and take cash in or
   pay it out.
 - **Managers** do everything a teller can, plus approve big transfers, undo mistakes, and run
@@ -255,6 +254,42 @@ To make sure the test can actually fail, the lock was taken out once and the tes
 All 20 withdrawals "worked". Each thread read $100, took off $10, and saved $90, so $200 in
 cash came out of a $100 account. That's the bug the lock exists to stop.
 
+### Transfers (milestone 4)
+
+A member can send money from one of their own accounts to any member account: their own
+savings, or Priya's chequing. A teller can move money between any two member accounts, for
+someone at the counter. "Cash on hand" is never part of a transfer; cash goes through a teller.
+
+A transfer writes two entries: minus on the account it leaves, plus on the account it arrives
+in. Same rules as before: it adds up to zero, no account goes below zero, nothing moves through
+a frozen account.
+
+### The daily limit
+
+A member can send at most $3,000 a day to other people. Moving money between your own
+accounts doesn't count, and neither do transfers staff make. If Sam has sent $2,500 today and
+tries $600, the answer says he can still send $500.
+
+"Today" means a calendar day in Toronto. At 11 p.m. in Toronto it's already tomorrow in UTC,
+and the limit shouldn't reset at 7 p.m. There's a test for the night the clocks go back, when a
+Toronto day is 25 hours long.
+
+The tricky part is two transfers at once. Sam sends $1,000 from chequing to Priya and, at the
+same moment, $1,000 from savings to Alex. The two transfers share no account, so account locks
+don't make them wait for each other. Both read "$2,500 sent today" and both go through. So a
+member's transfer first locks that member's own row in `app_user`. The second transfer waits,
+then sees $3,500 and is refused.
+
+### Lock order
+
+Every request takes its locks in the same order: the sending member first (for member
+transfers), then the accounts, lowest id first. Because everyone grabs locks in the same order,
+two requests can't each be holding what the other one needs.
+
+A test checks this. Sam and Priya send each other $10, 20 times, all at the same moment. With
+the fixed order every transfer finishes. With the accounts locked in request order instead,
+PostgreSQL found a deadlock and killed one of them.
+
 ### Freezing
 
 A manager can freeze an account (a stolen card, a fraud check) and has to give a reason, which
@@ -293,8 +328,10 @@ Every error comes back in the same JSON shape, so the frontend handles them all 
   the way a browser does.
 - **CI** runs everything on GitHub for every push and pull request.
 
-- **Concurrency tests** start 20 real threads at once against a real database: 20 withdrawals
-  from one account, and 20 copies of the same request with one idempotency key.
+- **Concurrency tests** start real threads at once against a real database: 20 withdrawals
+  from one account, 20 copies of the same request with one idempotency key, Sam and Priya
+  sending to each other at the same moment, and ten transfers at once against the daily limit.
+  Each one was checked by taking its lock out and watching the test fail.
 
 Coming later: a test that throws hundreds of random transactions at the ledger and then checks
 that everything still sums to zero.
@@ -303,7 +340,6 @@ that everything still sums to zero.
 
 | Milestone | What gets built |
 |---|---|
-| 4 | Transfers between accounts, the daily limit, deadlock tests |
 | 5 | Approvals, reversals, more audit events |
 | 6 | Statements, the reconciliation report, the large-cash report |
 | 7-8 | The web pages |
