@@ -11,6 +11,9 @@ with **reversals**.
 
 This document is the plan to agree on before writing code.
 
+**Status:** milestones 1–3 are built. The milestone list in section 9 says what each one
+covers.
+
 ---
 
 ## 0. Scope
@@ -271,7 +274,8 @@ Schema managed by Flyway migrations; Hibernate set to `validate`.
 
 All under `/api`, JSON, same error format as HandsOn
 (`{ status, error, message, fieldErrors, timestamp }`).
-Money endpoints **require** an `Idempotency-Key` header (missing → `400`).
+Money endpoints **require** an `Idempotency-Key` header (missing → `400`, reused for a
+different request → `422`).
 
 | Method | Path | Who | Purpose | Success | Main errors |
 |---|---|---|---|---|---|
@@ -281,12 +285,13 @@ Money endpoints **require** an `Idempotency-Key` header (missing → `400`).
 | POST | `/staff` | manager | Create a teller or manager (temporary password) | 201 | 400, 409 email taken |
 | POST | `/members` | teller, manager | Create a member (temporary password) | 201 | 400, 409 email taken |
 | GET | `/members?query=` · `/members/{id}` | teller, manager | Search / view a member | 200 | 404 |
-| POST | `/members/{id}/accounts` | teller, manager | Open chequing or savings | 201 | 404 |
+| POST | `/members/{id}/accounts` | teller, manager | Open chequing or savings | 201 | 400 system type, 404 |
+| GET | `/members/{id}/accounts` | teller, manager | A member's accounts | 200 | 404 |
 | GET | `/me/accounts` | member | My accounts and balances | 200 | |
-| GET | `/accounts/{number}` | owner, staff | Account with recent activity | 200 | 403, 404 |
-| PUT | `/accounts/{number}/status` | manager | Freeze / unfreeze | 200 | 404 |
-| POST | `/deposits` | teller | Cash deposit | 201 | 400, 409 frozen |
-| POST | `/withdrawals` | teller | Cash withdrawal | 201 posted / 202 pending | 409 insufficient funds |
+| GET | `/accounts/{number}` | owner, staff | Account with recent activity | 200 | 404 (also for someone else's account) |
+| PUT | `/accounts/{number}/status` | manager | Freeze / unfreeze, with a reason | 200 | 400 system account, 404, 409 already in that state |
+| POST | `/deposits` | teller, manager | Cash deposit | 201 | 400, 409 frozen, 422 key reused |
+| POST | `/withdrawals` | teller, manager | Cash withdrawal | 201 posted / 202 pending (from M5) | 409 insufficient funds or frozen, 422 key reused |
 | POST | `/transfers` | member (own accounts), teller | Transfer | 201 posted / 202 pending | 409 funds, limit, frozen |
 | GET | `/transactions/{reference}` | involved member, staff | One transaction with its entries | 200 | 404 |
 | GET | `/approvals` | manager | Pending queue | 200 | |
@@ -407,10 +412,11 @@ secrets live in the host's environment variables.
 1. **Setup:** Spring Boot, PostgreSQL in Docker, Flyway V1, CI from day one.
 2. **Users and security:** roles, staff-created members, first manager from settings,
    CSRF, error handling.
-3. **Accounts and the ledger core:** system accounts, `LedgerService`, cash deposits and
-   withdrawals with row locks.
-4. **Transfers and idempotency:** keys, fingerprints, daily limit, ordered locking, the
-   concurrency tests.
+3. **Accounts and the ledger core (built):** `LedgerService`, cash deposits and
+   withdrawals with row locks. Idempotency keys, fingerprints, id-ordered locking and the
+   first concurrency tests were pulled forward from milestone 4, because cash needed them too.
+4. **Transfers:** member transfers between accounts, the daily limit, more concurrency tests
+   (opposite-direction transfers must not deadlock).
 5. **Maker-checker, reversals and audit log.**
 6. **Statements, reconciliation and the large cash report;** the invariant test.
 7. **Frontend: member pages.**

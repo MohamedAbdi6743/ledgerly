@@ -47,6 +47,10 @@ public class SecurityConfig {
 				// Rules are checked top to bottom; the first match wins.
 				.requestMatchers("/api/staff/**").hasRole("MANAGER")
 				.requestMatchers("/api/members/**").hasAnyRole("TELLER", "MANAGER")
+				.requestMatchers("/api/me/**").hasRole("MEMBER")
+				.requestMatchers(HttpMethod.PUT, "/api/accounts/*/status").hasRole("MANAGER")
+				.requestMatchers("/api/deposits", "/api/withdrawals").hasAnyRole("TELLER", "MANAGER")
+				// Accounts and transactions: any logged-in user; the services check ownership.
 				.requestMatchers("/api/**").authenticated()
 				// Pages, CSS and JS are public; the data they show comes from /api.
 				.anyRequest().permitAll())

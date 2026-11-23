@@ -8,6 +8,7 @@ import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.ResultActions;
 
 import com.jayway.jsonpath.JsonPath;
 
@@ -62,6 +63,37 @@ final class ApiTestSupport {
 				{ "fullName": "Dana Lee", "email": "%s", "role": "TELLER" }
 				""".formatted(email));
 		return activate(mockMvc, email, json);
+	}
+
+	/** A member who has logged in and picked their own password. */
+	record Member(MockHttpSession session, long id) {
+	}
+
+	static Member activeMember(MockMvc mockMvc, MockHttpSession staff, String email) throws Exception {
+		String json = create(mockMvc, staff, "/api/members", """
+				{ "fullName": "Sam Ortiz", "email": "%s" }
+				""".formatted(email));
+		long id = ((Number) JsonPath.read(json, "$.id")).longValue();
+		return new Member(activate(mockMvc, email, json), id);
+	}
+
+	/** Opens an account through the API and returns its account number. */
+	static String openAccount(MockMvc mockMvc, MockHttpSession staff, long memberId, String type) throws Exception {
+		String json = create(mockMvc, staff, "/api/members/" + memberId + "/accounts", """
+				{ "type": "%s", "name": "My %s" }
+				""".formatted(type, type.toLowerCase()));
+		return JsonPath.read(json, "$.accountNumber");
+	}
+
+	/** POST /api/deposits or /api/withdrawals with an Idempotency-Key. */
+	static ResultActions cash(MockMvc mockMvc, MockHttpSession staff, String path, String key, String accountNumber,
+			String amount) throws Exception {
+		return mockMvc.perform(post(path).with(csrf()).session(staff)
+				.header("Idempotency-Key", key)
+				.contentType(MediaType.APPLICATION_JSON)
+				.content("""
+						{ "accountNumber": "%s", "amount": "%s" }
+						""".formatted(accountNumber, amount)));
 	}
 
 }

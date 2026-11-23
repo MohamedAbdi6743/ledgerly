@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
@@ -65,6 +66,11 @@ public class GlobalExceptionHandler {
 	@ExceptionHandler(BusinessRuleException.class)
 	public ResponseEntity<ApiError> handleBusinessRule(BusinessRuleException ex) {
 		return respond(ApiError.of(HttpStatus.CONFLICT, ex.getMessage()));
+	}
+
+	@ExceptionHandler(IdempotencyConflictException.class)
+	public ResponseEntity<ApiError> handleIdempotencyConflict(IdempotencyConflictException ex) {
+		return respond(ApiError.of(HttpStatusCode.valueOf(422), ex.getMessage()));
 	}
 
 	/** A database constraint refused the change. The real message is logged, not shown (it names tables). */
