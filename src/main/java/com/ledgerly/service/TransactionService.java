@@ -38,7 +38,10 @@ public class TransactionService {
 		if (!allowed) {
 			throw new NotFoundException("Transaction not found.");
 		}
-		return TransactionResponse.from(transaction, ledgerEntryRepository.findByTransactionIdOrderByIdAsc(transaction.getId()));
+		String reversedBy = journalTransactionRepository.findByReversesId(transaction.getId())
+				.map(JournalTransaction::getReference).orElse(null);
+		return TransactionResponse.from(transaction,
+				ledgerEntryRepository.findByTransactionIdOrderByIdAsc(transaction.getId()), reversedBy);
 	}
 
 }

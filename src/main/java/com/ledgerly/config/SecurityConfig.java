@@ -50,6 +50,8 @@ public class SecurityConfig {
 				.requestMatchers("/api/me/**").hasRole("MEMBER")
 				.requestMatchers(HttpMethod.PUT, "/api/accounts/*/status").hasRole("MANAGER")
 				.requestMatchers("/api/deposits", "/api/withdrawals").hasAnyRole("TELLER", "MANAGER")
+				.requestMatchers("/api/approvals/**", "/api/audit/**").hasRole("MANAGER")
+				.requestMatchers(HttpMethod.POST, "/api/transactions/*/reversal").hasRole("MANAGER")
 				// Accounts and transactions: any logged-in user; the services check ownership.
 				.requestMatchers("/api/**").authenticated()
 				// Pages, CSS and JS are public; the data they show comes from /api.

@@ -39,3 +39,6 @@ ledgerly:
   transfers:
     # Most a member can send per day to accounts they don't own. Their own accounts don't count.
     daily-limit: 3000.00
+  approvals:
+    # Withdrawals and transfers to someone else of this much or more wait for a manager.
+    threshold: 5000.00

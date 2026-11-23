@@ -39,7 +39,7 @@ import com.ledgerly.service.PaymentService.PaymentResult;
  *
  * Locks are always taken in the same order: the sending member first (members only), then the
  * two accounts lowest id first. A fixed order is what makes deadlocks impossible.
- * Transfers of $5,000 or more will wait for a manager's approval from milestone 5.
+ * Transfers of $5,000 or more to someone else wait for a manager (see ApprovalPolicy).
  */
 @Service
 public class TransferService {
@@ -55,13 +55,14 @@ public class TransferService {
 	private final ReferenceGenerator referenceGenerator;
 	private final DailyTransferLimit dailyLimit;
 	private final UserService userService;
+	private final ApprovalPolicy approvalPolicy;
 	private final Clock clock;
 
 	public TransferService(AccountRepository accountRepository,
 			JournalTransactionRepository journalTransactionRepository, LedgerEntryRepository ledgerEntryRepository,
 			UserRepository userRepository, LedgerService ledgerService, IdempotencyService idempotencyService,
 			ReferenceGenerator referenceGenerator, DailyTransferLimit dailyLimit, UserService userService,
-			Clock clock) {
+			ApprovalPolicy approvalPolicy, Clock clock) {
 		this.accountRepository = accountRepository;
 		this.journalTransactionRepository = journalTransactionRepository;
 		this.ledgerEntryRepository = ledgerEntryRepository;
@@ -71,6 +72,7 @@ public class TransferService {
 		this.referenceGenerator = referenceGenerator;
 		this.dailyLimit = dailyLimit;
 		this.userService = userService;
+		this.approvalPolicy = approvalPolicy;
 		this.clock = clock;
 	}
 
@@ -120,14 +122,27 @@ public class TransferService {
 			dailyLimit.check(journalTransactionRepository.sumSentToOthers(user.getId(), today.from(), today.to()), amount);
 		}
 
-		JournalTransaction transaction = journalTransactionRepository.save(JournalTransaction.posted(
-				referenceGenerator.next(), TransactionType.TRANSFER, amount, from, to, description, user,
-				idempotencyKey, fingerprint, Instant.now(clock)));
-		List<LedgerEntry> entries = ledgerService.post(transaction,
-				List.of(new Leg(from, amount.negate()), new Leg(to, amount)));
+		List<Leg> legs = Legs.transfer(from, to, amount);
+		String reference = referenceGenerator.next();
+		Instant now = Instant.now(clock);
+
+		// Large transfers to someone else wait for a manager. Pending ones still count toward the
+		// daily limit (sumSentToOthers skips only rejected ones).
+		if (approvalPolicy.transferNeedsApproval(amount, from, to)) {
+			ledgerService.check(TransactionType.TRANSFER, legs);
+			JournalTransaction pending = journalTransactionRepository.save(JournalTransaction.pending(reference,
+					TransactionType.TRANSFER, amount, from, to, description, user, idempotencyKey, fingerprint, now));
+			log.info("User {} requested TRANSFER {} of {} from account id {} to account id {}, waiting for approval",
+					user.getId(), reference, Money.toText(amount), fromId, toId);
+			return new PaymentResult(TransactionResponse.from(pending, List.of()), false);
+		}
+
+		JournalTransaction transaction = journalTransactionRepository.save(JournalTransaction.posted(reference,
+				TransactionType.TRANSFER, amount, from, to, description, user, idempotencyKey, fingerprint, now));
+		List<LedgerEntry> entries = ledgerService.post(transaction, legs);
 
 		log.info("User {} posted TRANSFER {} of {} from account id {} to account id {}", user.getId(),
-				transaction.getReference(), Money.toText(amount), fromId, toId);
+				reference, Money.toText(amount), fromId, toId);
 		return new PaymentResult(TransactionResponse.from(transaction, entries), false);
 	}
 

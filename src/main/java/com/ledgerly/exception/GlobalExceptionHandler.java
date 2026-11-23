@@ -53,6 +53,11 @@ public class GlobalExceptionHandler {
 		return respond(ApiError.of(HttpStatus.FORBIDDEN, ex.getMessage()));
 	}
 
+	@ExceptionHandler(ForbiddenException.class)
+	public ResponseEntity<ApiError> handleForbidden(ForbiddenException ex) {
+		return respond(ApiError.of(HttpStatus.FORBIDDEN, ex.getMessage()));
+	}
+
 	@ExceptionHandler(AccessDeniedException.class)
 	public ResponseEntity<ApiError> handleAccessDenied(AccessDeniedException ex) {
 		return respond(ApiError.of(HttpStatus.FORBIDDEN, "You don't have permission to do this."));

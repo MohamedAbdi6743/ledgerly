@@ -3,8 +3,8 @@
 Plain-English notes on the design. The formal version, with every table and endpoint, is in
 [ARCHITECTURE.md](ARCHITECTURE.md). This one is about the *why*.
 
-Status: milestones 1 to 4 are built (database, login, accounts, cash, transfers). Approvals,
-reversals and reports come later, so those sections describe how they will work.
+Status: milestones 1 to 5 are built (database, login, accounts, cash, transfers, approvals,
+reversals). Statements and reports come later.
 
 ---
 
@@ -91,6 +91,21 @@ posts a **reversal**: a new transaction with the opposite entries, linked to the
 reason. Then the teller posts the right amount. Anyone reading the history later sees exactly
 what happened, mistake included. Banks work this way because auditors need the full story.
 
+The reversal's entries are the original's with the signs flipped: a $500 deposit wrote
++500 for Priya and -500 for the cash drawer, so its reversal writes -500 for Priya and +500
+for the drawer. The original says "reversed by TX-...", the reversal says "reverses TX-...".
+
+A few things can't be reversed:
+
+- Something already reversed. The database backs this up: `reverses_id` is unique.
+- A reversal itself. To fix a wrong reversal, post a new transaction.
+- A request still waiting for approval. Nothing has moved yet, so it's rejected instead.
+- A deposit whose money has since been spent. If Priya deposited $100 and took out $80,
+  reversing the deposit would leave her at -$80, so it's refused.
+
+A freeze doesn't block a reversal. Freezing stops the member moving money. Reversing a
+suspicious deposit is often exactly why a manager froze the account.
+
 ---
 
 ## Making money movements safe
@@ -123,13 +138,29 @@ can never grab the locks in opposite orders.
 
 ### Big transfers need a second person (maker-checker)
 
-Transfers and cash withdrawals of $5,000 or more don't happen right away. They're saved as
-"pending approval" with no ledger entries yet. A manager has to approve or reject them, and the
-person who created a request can never approve it. Banks call this the four-eyes rule. It
+Cash withdrawals of $5,000 or more, and transfers of $5,000 or more to someone else, don't happen
+right away. They're saved as "pending approval" with no ledger entries, and the answer is HTTP
+202 ("accepted, not done yet") instead of 201. A manager has to approve or reject them, and the
+person who created a request can never decide on it. Banks call this the four-eyes rule. It
 means one person alone can't move a large amount of money.
 
 That rule is checked in the Java code and again in the database
 (`CHECK (approved_by <> created_by)`).
+
+Moving your own money between your own accounts doesn't need approval, however large. Nobody
+else's money is at risk.
+
+When a request comes in, Ledgerly checks it could go through right now (enough money, account
+not frozen) and refuses it straight away if not, so the manager's queue only holds real
+requests. But the money isn't held while it waits. If Sam's balance drops in the meantime, the
+approval runs every check again and fails with "insufficient funds", and the request stays in
+the queue for the manager to reject.
+
+Approving locks the request's row first. Two managers clicking Approve at the same moment take
+turns: the first posts it, the second is told it's already been decided. A test runs ten
+approvals at once and checks the money moves once. Without that lock, three went through.
+
+Rejecting needs a reason, and the member can see it on the transaction.
 
 ---
 
@@ -331,7 +362,8 @@ Every error comes back in the same JSON shape, so the frontend handles them all 
 - **Concurrency tests** start real threads at once against a real database: 20 withdrawals
   from one account, 20 copies of the same request with one idempotency key, Sam and Priya
   sending to each other at the same moment, and ten transfers at once against the daily limit.
-  Each one was checked by taking its lock out and watching the test fail.
+  Each one was checked by taking its lock out and watching the test fail. Ten managers
+  approving one request at once, and ten reversals of one transaction, are covered too.
 
 Coming later: a test that throws hundreds of random transactions at the ledger and then checks
 that everything still sums to zero.
@@ -340,7 +372,6 @@ that everything still sums to zero.
 
 | Milestone | What gets built |
 |---|---|
-| 5 | Approvals, reversals, more audit events |
 | 6 | Statements, the reconciliation report, the large-cash report |
 | 7-8 | The web pages |
 | 9 | Putting a live demo online |

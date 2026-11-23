@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.ledgerly.dto.CashRequest;
 import com.ledgerly.dto.TransactionResponse;
+import com.ledgerly.entity.TransactionStatus;
 import com.ledgerly.service.PaymentService;
 import com.ledgerly.service.PaymentService.PaymentResult;
 import com.ledgerly.service.TransactionService;
@@ -56,9 +57,14 @@ public class CashController {
 		return transactionService.get(reference, authentication.getName());
 	}
 
-	/** A retry gets the same status and body as the first try, plus a header saying it was a replay. */
+	/**
+	 * 201 when the money moved, 202 when the request is waiting for a manager. A retry gets the
+	 * same status and body as the first try, plus a header saying it was a replay.
+	 */
 	static ResponseEntity<TransactionResponse> created(PaymentResult result) {
-		ResponseEntity.BodyBuilder response = ResponseEntity.status(HttpStatus.CREATED);
+		HttpStatus status = (result.transaction().status() == TransactionStatus.PENDING_APPROVAL)
+				? HttpStatus.ACCEPTED : HttpStatus.CREATED;
+		ResponseEntity.BodyBuilder response = ResponseEntity.status(status);
 		if (result.replayed()) {
 			response.header(REPLAYED, "true");
 		}
